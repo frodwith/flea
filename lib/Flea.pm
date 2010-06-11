@@ -28,8 +28,6 @@ export method Flea::Parser::Method {
     my $code    = pop;
     my $re      = pop;
     my $methods = [@_];
-    use Data::Dumper;
-    warn Dumper $re;
     route($methods, $re, $code);
 }
 
