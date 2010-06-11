@@ -1,25 +1,36 @@
 package Flea;
 
-use Carp qw(croak);
-use Devel::Declare;
-use B::Hooks::EndOfScope;
-use Scalar::Util qw(blessed);
-use Exception::Class ('Flea::Pass' => { alias => 'pass' });
-use JSON;
-
 use strict;
 use warnings;
 
-our @CARP_NOT = qw(Devel::Declare);
+use Carp qw(croak);
+use Exception::Class ('Flea::Pass' => { alias => 'pass' });
+use Exporter::Declare;
+use JSON;
+use HTTP::Exception;
+use Try::Tiny;
 
-our $_add_handler = sub { croak 'Trying to add handler outside bite' };
+our @EXPORT = qw(handle http route);
+our $_add = sub { croak 'Trying to add handler outside bite' };
 
-for my $keyword (qw(get set put del any)) {
-    no strict 'refs';
-    *{$keyword} = sub { $_add_handler->(@_) };
-};
+sub route {
+    my ($methods, $regex, $code) = @_;
+    $_add->(lc $_, $regex, $code) for @$methods;
+}
 
-sub json {
+export get    Flea::Parser::Route  { route(['get'],  @_) }
+export put    Flea::Parser::Route  { route(['put'],  @_) }
+export del    Flea::Parser::Route  { route(['del'],  @_) }
+export any    Flea::Parser::Route  { route(['any'],  @_) }
+export post   Flea::Parser::Route  { route(['post'], @_) }
+export method Flea::Parser::Method { 
+    my $code    = pop;
+    my $re      = pop;
+    my $methods = [@_];
+    route($methods, $re, $code);
+}
+
+export json {
     return [
         200,
         ['Content-Type' => 'application/json; charset=UTF-8'],
@@ -27,7 +38,7 @@ sub json {
     ];
 }
 
-sub html {
+export html {
     return [
         200,
         ['Content-Type' => 'text/html; charset=UTF-8'],
@@ -35,17 +46,12 @@ sub html {
     ];
 }
 
-sub text {
+export text {
     return [
         200,
         ['Content-Type' => 'text/plain; charset=UTF-8'],
         [ shift ]
     ];
-}
-
-sub method {
-    my $methods = shift;
-    $_add_handler->(@_) for @$methods;
 }
 
 sub http {
@@ -61,9 +67,15 @@ sub handle {
     ];
 }
 
-sub file {
+export file {
     open my $fh, '<', shift;
     handle($fh, @_);
+}
+
+sub _rethrow {
+    my $e = shift;
+    $e->rethrow if ref $e && $e->can('rethrow');
+    die $e || 'unknown error';
 }
 
 sub _find_and_run {
@@ -75,7 +87,8 @@ sub _find_and_run {
                 $h->{handler}->($env);
             }
             catch {
-                die $_ unless Flee::Pass->caught($_);
+                my $e = $_;
+                _rethrow($e) unless Flea::Pass->caught;
                 undef;
             };
             if (try { $result->can('finalize') }) {
@@ -87,12 +100,14 @@ sub _find_and_run {
     undef;
 }
 
-sub bite {
+export bite codeblock {
+    my $block = shift;
     my %method;
-    local $_add_handler = sub {
+    local $_add = sub {
         my ($m, $r, $c) = @_;
         push(@{$method{$m}}, { pattern => $r, handler => $c });
     };
+    $block->();
 
     return sub {
         my $env    = shift;
@@ -103,111 +118,6 @@ sub bite {
         return $result if $result;
         http 404;
     };
-}
-
-sub end_handler {
-    on_scope_end {
-        my $linestr = Devel::Declare::get_linestr;
-        my $offset  = Devel::Declare::get_linestr_offset;
-        substr($linestr, $offset, 0, ');');
-        Devel::Declare::set_linestr($linestr);
-        print STDERR $linestr;
-    }
-}
-
-sub _install_sub {
-    my ($exporter, $from, $importer, $to) = @_;
-    no strict 'refs';
-    *{"${importer}::$to"} = \&{"${exporter}::$from"};
-}
-
-sub _named_method {
-    my ($exporter, $from, $importer, $to) = @_;
-    Devel::Declare->setup_for(
-        $importer,
-        {
-            $to => {
-                const => sub {
-                    my ($before, $regex) = Devel::Declare::get_linestr() =~
-                        /^(\s*$to\s*)(.*)\s*{\s*$/;
-                    croak 'No regex for dispatcher' unless $regex;
-                    $regex =~ s/~/\\~/g;
-                    Devel::Declare::set_linestr(
-                        "$before(qr~$regex~,sub{BEGIN {Flea::end_handler};"
-                    );
-                    print STDERR Devel::Declare::get_linestr;
-                },
-            },
-        },
-    );
-    goto &_install_sub;
-}
-
-sub _method_keyword {
-    my ($exporter, $from, $importer, $to) = @_;
-    Devel::Declare->setup_for(
-        $importer,
-        {
-            $to => {
-                const => sub {
-                    my @matches = Devel::Declare::get_linestr() =~
-                        /^(\s*method\s+)
-                         ([a-z]+)
-                         (?:
-                            \s*,\s*
-                            ([a-z]+))*
-                         \s*(.+)\s*
-                         {\s*$/x;
-                    my $b = shift(@matches);
-                    my $r = pop(@matches);
-                    croak 'no regex for dispatcher' unless $r;
-                    $r =~ s/~/\\~/g;
-                    my $m = '[qw(' . join(' ', @matches) . ')]';
-                    Devel::Declare::set_linestr(
-                        "$b($m, qr~$r~, sub { BEGIN { Flea::end_handler }"
-                    );
-                }
-            }
-        }
-    );
-    goto &_install_sub;
-}
-
-my %export_types;
-BEGIN {
-    %export_types = (
-        (map { $_ => \&_named_method } qw(get post put del any)),
-        (map { $_ => \&_install_sub } qw(bite json text html
-                                        file handle http pass)),
-        method => \&_method_keyword,
-    );
-}
-
-sub import {
-    my ($package, %opts) = @_;
-    my $caller = caller;
-    my @default = keys %export_types;
-    my %exports;
-    if (my $only = $opts{only}) {
-        croak 'only and except in the same import' if $opts{except};
-        @exports{@$only} = @$only;
-    }
-    else {
-        @exports{@default} = @default;
-        if(my $except = $opts{except}) {
-            delete @exports{@$except};
-        }
-    }
-    if (my $rename = $opts{rename}) {
-        for my $key (%$rename) {
-            croak "Trying to rename $key, which isn't exported"
-                unless $exports{$key};
-            $exports{$key} = $rename->{$key};
-        }
-    }
-    for my $key (keys %exports) {
-        $export_types{$key}->($package, $key, $caller, $exports{$key});
-    }
 }
 
 1;
@@ -222,13 +132,13 @@ Flea - Minimalistic sugar for your Plack
     use Flea;
 
     my $app = bite {
-        get ^/$ {
+        get '^/$' {
             file 'index.html';
         }
-        get ^/api$ {
+        get '^/api$' {
             json { foo => 'bar' };
         }
-        post ^/resource/(\d+)$ {
+        post '^/resource/(\d+)$' {
             my $request  = request(shift);
             my $id       = shift;
             http 400 unless valid_id($id);
@@ -252,8 +162,7 @@ bite you when you're not paying attention.  You have been warned.
 
 =head1 EXPORTS
 
-Flea has a custom exporter to let you do strange things to all of these
-keywords, but by default it gives you everything.  See L<EXPORT ARGUMENTS>.
+Flea is a L<Exporter::Declare>.  Everything from there should work.
 
 =head2 bite
 
@@ -266,10 +175,15 @@ so your app will be 'mountable' via L<Plack::Builder>.
 
 C<any> will match any request method, and the others will only match the
 corresponding method.  If you need to match some other method or combination
-of methods, see L<method>.  Aren't you glad you can rename these?
+of methods, see L<method>.  Aren't you glad you can rename these? (see
+L<Exporter::Declare>).
 
-Next come a regex to match path_info against.  Don't quote it.  God help you
-if you quote it.
+Next come a regex to match path_info against.  You should surround the regex
+with single quotes.  B<LISTEN>:  are you listening?  B<SINGLE QUOTES>.  This
+isn't a real perl string, it's parsed with Devel::Declare magic (you'll end up
+with a compiled regex).  If you try to use C<qr> or something cute like that,
+you'll get B<bitten>.  If you need to do something fancy, use L<route> instead
+of these sugary things.
 
 Last of all comes a block.  This receives the PSGI env as its first argument
 and any matches from the regex as extra arguments.  It can return either a raw
@@ -281,11 +195,24 @@ response (like Plack::Response).
 Just like get/post/etc, except you can tack on method names (separated by
 commas) to say which methods will match.
 
-    method options ^/regex$ {
+    method options '^/regex$' {
     }
 
-    method options, head ^/regex$ {
+    method options head '^/regex$' {
     }
+
+=head2 route($methods, $regex, $sub)
+
+This is an honest to goodness real perl subroutine, unlike the magic bits
+above.  You call it like:
+    
+    route ['get', 'head'], qr{^a/real/regex/please$}, sub {
+        ...
+    };
+
+Yes, $methods has to be an arrayref.  No, $regex doesn't have to be compiled,
+you can pass it a string if you want.  But then, why are you using route?
+Yes, you need the semicolon at the end.
 
 =head2 json($str)
 
@@ -320,40 +247,20 @@ handler didn't match and keep trying other handlers.  By the way, the default
 action when no handler is found (or they all passed) is to throw a 404
 exception.
 
-=head1 EXPORT ARGUMENTS
-
-The exporter takes keyword arguments (e.g.)
-
-    use Flea (
-        only => [qw(bite get post)], 
-        rename => { bite => 'something_less_corny' }
-    );
-
-=head2 only
-
-Exports only the sugar you ask for.  Pass it an array of names.
-
-=head2 except
-
-Exports everything except what you don't want.  Also takes an array of names.
-If you try to mix this with only, Flea will bite you.
-
-=head2 rename
-
-A hashref of names to change.  You might want to do this if one of the
-keywords that you want has a name that you don't like.  If you try to rename
-something you're not importing, Flea will bite you.
-
 =head1 MATURITY
 
 This module is extremely immature as of this writing.  Not only does the
 author have the mind of a child, he has never before tinkered with
-Devel::Declare magic and has only consulted its terrible documentation rather
-than asking one of the many insane^H^H^H^H^H^Htalented individuals in
-#devel-declare.  Therefore, Flea will probably break.  When it does, fork it on
-github or send the author a patch or something.  Or go use a real web
-framework for grownups, like L<Catalyst>.
+Devel::Declare magic, although L<Exporter::Declare> sure does help.  The
+author hasn't thought very hard about the interface, either, so that could
+change.  When Flea breaks or doesn't do what you want,  fork it on L<GITHUB>
+and/or send the author a patch or something.  Or go use a real web framework
+for grownups, like L<Catalyst>.
+
+=head1 GITHUB
+
+Oh yeah, Flea is hosted on Github at L<http://github.com/frodwith/flea>.
 
 =head1 SEE ALSO
 
-L<PSGI>, L<Plack>, L<Dancer>, L<Devel::Declare>
+L<PSGI>, L<Plack>, L<Dancer>, L<Exporter::Declare>
