@@ -9,6 +9,7 @@ use Exporter::Declare;
 use JSON;
 use HTTP::Exception;
 use Try::Tiny;
+use Plack::Request;
 
 our @EXPORT = qw(handle http route);
 our $_add = sub { croak 'Trying to add handler outside bite' };
@@ -27,6 +28,8 @@ export method Flea::Parser::Method {
     my $code    = pop;
     my $re      = pop;
     my $methods = [@_];
+    use Data::Dumper;
+    warn Dumper $re;
     route($methods, $re, $code);
 }
 
@@ -72,6 +75,9 @@ export file {
     handle($fh, @_);
 }
 
+export request  { Plack::Request->new(shift) }
+export response { shift->new_response(200) }
+
 sub _rethrow {
     my $e = shift;
     $e->rethrow if ref $e && $e->can('rethrow');
@@ -82,9 +88,10 @@ sub _find_and_run {
     my ($handlers, $env) = @_;
     return unless $handlers;
     for my $h (@$handlers) {
-        if ($env->{PATH_INFO} =~ $h->{pattern}) {
+        my @matches = $env->{PATH_INFO} =~ $h->{pattern};
+        if (@matches) {
             my $result = try {
-                $h->{handler}->($env);
+                $h->{handler}->($env, @matches);
             }
             catch {
                 my $e = $_;
@@ -214,6 +221,14 @@ Yes, $methods has to be an arrayref.  No, $regex doesn't have to be compiled,
 you can pass it a string if you want.  But then, why are you using route?
 Yes, you need the semicolon at the end.
 
+=head2 request($env)
+
+Short for Plack::Request->new($env)
+
+=head2 response($request)
+
+Short for $request->new_response(200).
+
 =head2 json($str)
 
 Returns a full C<200 OK>, C<content-type application/json; charset=UTF-8>
@@ -260,6 +275,11 @@ for grownups, like L<Catalyst>.
 =head1 GITHUB
 
 Oh yeah, Flea is hosted on Github at L<http://github.com/frodwith/flea>.
+
+=head1 IRC
+
+You can try hopping into #flea on irc.perl.org.  The author might even be
+there.  He might even be paying attention to his irc client!
 
 =head1 SEE ALSO
 

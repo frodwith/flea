@@ -1,5 +1,10 @@
 package Flea::Parser::Route;
+
+use warnings;
+use strict;
+
 use base 'Devel::Declare::Parser';
+
 use Devel::Declare::Interface;
 Devel::Declare::Interface::register_parser(__PACKAGE__);
 

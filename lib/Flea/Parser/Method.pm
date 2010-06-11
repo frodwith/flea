@@ -1,5 +1,10 @@
 package Flea::Parser::Method;
+
+use warnings;
+use strict;
+
 use base 'Devel::Declare::Parser';
+
 use Devel::Declare::Interface;
 Devel::Declare::Interface::register_parser(__PACKAGE__);
 
@@ -10,7 +15,7 @@ sub rewrite {
 
     my $re = do {
         my $r = pop @$parts;
-        $r = eval { qr{$re->[0]} } or $self->bail('Could not parse route');
+        $r = eval { qr{$r->[0]} } or $self->bail('Could not parse route');
         [ $r, undef ]
     };
     push(@$parts, $re);
