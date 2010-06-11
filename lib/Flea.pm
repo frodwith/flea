@@ -198,7 +198,7 @@ response (like Plack::Response).
 =head2 method
 
 Just like get/post/etc, except you can tack on method names (separated by
-commas) to say which methods will match.
+spaces) to say which methods will match.
 
     method options '^/regex$' {
     }
