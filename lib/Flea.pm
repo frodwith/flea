@@ -11,13 +11,14 @@ use HTTP::Exception;
 use Try::Tiny;
 use Plack::Request;
 use URI;
+use List::Util qw(first);
 
 our @EXPORT = qw(handle http route);
 our $_add = sub { croak 'Trying to add handler outside bite' };
 
 sub route {
     my ($methods, $regex, $code) = @_;
-    $_add->(lc $_, $regex, $code) for @$methods;
+    $_add->([map {lc} @$methods], $regex, $code);
 }
 
 export get    Flea::Parser::Route  { route(['get'],  @_) }
@@ -93,10 +94,15 @@ sub _rethrow {
 
 sub _find_and_run {
     my ($handlers, $env) = @_;
-    return unless $handlers;
+    my $method = lc $env->{REQUEST_METHOD};
+    my $found  = 0;
     for my $h (@$handlers) {
         my @matches = $env->{PATH_INFO} =~ $h->{pattern};
         if (@matches) {
+            $found = 1;
+            next unless first { $_ eq $method || $_ eq 'any' }
+                        @{ $h->{methods} };
+
             my $result = try {
                 $h->{handler}->($env, @matches);
             }
@@ -105,33 +111,24 @@ sub _find_and_run {
                 _rethrow($e) unless Flea::Pass->caught;
                 undef;
             };
-            if (try { $result->can('finalize') }) {
-                $result = $result->finalize;
-            }
-            return $result if $result;
+            next unless $result;
+            return try { $result->finalize } || $result;
         }
     }
-    undef;
+    http ($found ? 405 : 404);
 }
 
 export bite codeblock {
     my $block = shift;
+    my @handlers;
     my %method;
     local $_add = sub {
         my ($m, $r, $c) = @_;
-        push(@{$method{$m}}, { pattern => $r, handler => $c });
+        push(@handlers, { methods => $m, pattern => $r, handler => $c });
     };
     $block->();
 
-    return sub {
-        my $env    = shift;
-        my $result = _find_and_run($method{any}, $env);
-        return $result if $result;
-
-        $result    = _find_and_run($method{lc $env->{REQUEST_METHOD}}, $env);
-        return $result if $result;
-        http 404;
-    };
+    return sub { _find_and_run(\@handlers, shift) };
 }
 
 1;
