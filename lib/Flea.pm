@@ -121,7 +121,6 @@ sub _find_and_run {
 default_export bite codeblock {
     my $block = shift;
     my @handlers;
-    my %method;
     local $_add = sub {
         my ($m, $r, $c) = @_;
         push(@handlers, { methods => $m, pattern => $r, handler => $c });
