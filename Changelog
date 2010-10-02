@@ -4,3 +4,7 @@
 0.02
 	Pod fixes
 	added uri helper
+
+0.03
+	Some basic (still incomplete) tests
+	Taking advantage of some new Exporter::Declare sugar (thanks exodist!)
